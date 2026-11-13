@@ -41,6 +41,11 @@ const (
 	// until reading an event blocks. This value should be big enough to handle
 	// bursts of events.
 	eventBuffer = 5000
+
+	// genericEvent is the event code every extension event arrives in, named
+	// GeGeneric by the core bindings. The extension's major opcode is in the byte
+	// after it, and the event type the extension defines follows the length field.
+	genericEvent = 35
 )
 
 // A Conn represents a connection to an X server.
@@ -554,6 +559,23 @@ func (c *Conn) readResponses() {
 			// the most significant bit (which is set when it was sent from
 			// a SendEvent request).
 			evNum := int(buf[0] & 127)
+			// A generic event is the envelope every extension event arrives in,
+			// and its length field counts 4 byte units of protocol data after the
+			// 32 header bytes: XInput 2 puts a raw motion's valuators there. Left
+			// in the socket, that data parses as the next event and desynchronises
+			// the connection after the first one.
+			if evNum == genericEvent {
+				if extra := int(Get32(buf[4:])) * 4; extra > 0 {
+					full := make([]byte, 32+extra)
+					copy(full, buf)
+					if _, err := io.ReadFull(c.conn, full[32:]); err != nil {
+						Logger.Printf("A read error is unrecoverable: %s", err)
+						c.eventChan <- err
+						return
+					}
+					buf = full
+				}
+			}
 			newEventFun, ok := NewEventFuncs[evNum]
 			if !ok {
 				Logger.Printf("BUG: Could not find event construct function "+
